@@ -7,3 +7,4 @@ chromadb
 tiktoken
 python-dotenv
 pydantic>=2
+pytest

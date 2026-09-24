@@ -15,7 +15,7 @@ from langchain_core.documents import Document
 from langchain_core.exceptions import OutputParserException
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import Runnable, RunnableLambda, RunnableParallel
+from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
 from pydantic import BaseModel, Field, model_validator
 
 import config
@@ -71,19 +71,32 @@ def format_docs(docs: List[Document]) -> str:
 
 
 # ---------------------------------------------------------------- cadena LCEL
+def verificar_fuentes(data: dict) -> RespuestaRAG:
+    """Las fuentes citadas deben ser archivos realmente recuperados (evita fuentes inventadas)."""
+    respuesta: RespuestaRAG = data["respuesta"]
+    recuperadas = list(dict.fromkeys(d.metadata.get("source", "?") for d in data["docs"]))
+    if respuesta.encontrado_en_contexto:
+        validas = [f for f in respuesta.fuentes if f in recuperadas]
+        respuesta.fuentes = validas or recuperadas
+    return respuesta
+
+
 def build_rag_chain(retriever: Runnable, llm=None) -> Runnable:
+    """retriever -> format_docs -> prompt -> LLM -> PydanticOutputParser -> verificación de fuentes."""
     llm = llm or config.get_llm()
-    chain = (
-        RunnableParallel(
-            contexto=itemgetter("pregunta") | retriever | RunnableLambda(format_docs),
-            pregunta=itemgetter("pregunta"),
-        )
+
+    generacion = (
+        {"contexto": itemgetter("docs") | RunnableLambda(format_docs), "pregunta": itemgetter("pregunta")}
         | prompt
         | llm
         | parser
+    ).with_retry(retry_if_exception_type=(OutputParserException,), stop_after_attempt=2)  # JSON mal formado
+
+    return (
+        RunnablePassthrough.assign(docs=itemgetter("pregunta") | retriever)   # 1. recuperación (top_k)
+        | RunnablePassthrough.assign(respuesta=generacion)                    # 2. generación grounded
+        | RunnableLambda(verificar_fuentes)                                   # 3. salida validada
     )
-    # Si el modelo devuelve un JSON mal formado, reintenta una vez más
-    return chain.with_retry(retry_if_exception_type=(OutputParserException,), stop_after_attempt=2)
 
 
 def get_retriever():
@@ -95,14 +108,27 @@ def get_retriever():
     return store.as_retriever(search_kwargs={"k": config.TOP_K})
 
 
-async def preguntar(chain: Runnable, pregunta: str) -> RespuestaRAG:
+_chain: Runnable | None = None
+
+
+async def get_rag_response(pregunta: str, chain: Runnable | None = None) -> RespuestaRAG:
+    """Punto de entrada del sistema RAG (asíncrono).
+
+    Convierte la pregunta en embedding, recupera los fragmentos más relevantes de ChromaDB
+    y genera una respuesta validada con Pydantic que incluye las fuentes.
+    """
+    global _chain
+    if chain is None:
+        if _chain is None:
+            _chain = build_rag_chain(get_retriever())
+        chain = _chain
     return await chain.ainvoke({"pregunta": pregunta})
 
 
 async def main(preguntas: List[str]):
     chain = build_rag_chain(get_retriever())
     # Las preguntas son independientes: se ejecutan en paralelo
-    resultados = await asyncio.gather(*(preguntar(chain, p) for p in preguntas), return_exceptions=True)
+    resultados = await asyncio.gather(*(get_rag_response(p, chain) for p in preguntas), return_exceptions=True)
     for pregunta, r in zip(preguntas, resultados):
         print(f"\n❓ {pregunta}")
         if isinstance(r, Exception):
