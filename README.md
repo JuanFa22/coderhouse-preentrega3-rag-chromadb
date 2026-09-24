@@ -67,6 +67,49 @@ python rag.py "¿Qué hace upsert en ChromaDB?"   # pregunta propia
 Con `GOOGLE_API_KEY` usa Gemini (`gemini-embedding-001` + `gemini-2.5-flash`); con `OPENAI_API_KEY`,
 OpenAI (`text-embedding-3-small` + `gpt-4o-mini`).
 
-## Ejemplo de salida
+## Ejemplo de salida (corrida real con Gemini)
 
-_(se completa con la corrida real)_
+**Ingesta** — primera y segunda ejecución:
+
+```
+$ python ingest.py
+INFO | Documentos cargados: 4
+INFO | Chunks generados: 10 (chunk_size=200 tokens, overlap=40)
+INFO | HTTP Request: POST .../gemini-embedding-001:batchEmbedContents "HTTP/1.1 200 OK"
+INFO | Chunks nuevos indexados: 10 | Total en la colección: 10
+
+$ python ingest.py
+INFO | Documentos cargados: 4
+INFO | Chunks generados: 10 (chunk_size=200 tokens, overlap=40)
+INFO | La base ya está al día (10 chunks). No se reindexa nada.
+```
+
+La segunda ejecución no vuelve a llamar a la API de embeddings: los IDs deterministas detectan que la base ya existe.
+
+**Consulta** — `python rag.py` (4 preguntas en paralelo, la última fuera de contexto):
+
+```
+❓ ¿Qué diferencia hay entre get y query en ChromaDB?
+💬 En ChromaDB, `get` busca registros por IDs exactos o filtros de metadatos, funcionando de manera similar a un
+   `SELECT` tradicional. Por otro lado, `query` busca por similitud semántica, lo cual es fundamental para RAG.
+   encontrado_en_contexto=True | fuentes=['04_chromadb_y_rag.md']
+
+❓ ¿Para qué sirve el chunk_overlap?
+💬 El `chunk_overlap` repite parte del final de un fragmento (chunk) al inicio del siguiente para evitar perder
+   contexto en los cortes.
+   encontrado_en_contexto=True | fuentes=['03_embeddings_y_chunking.md']
+
+❓ ¿Cuántos fragmentos conviene recuperar en un RAG y por qué?
+💬 Se recomienda usar un `top_k` de entre 3 y 5 fragmentos en un sistema RAG. Esto se debe a que pasar demasiados
+   fragmentos puede provocar errores de límite de tokens o el efecto "Lost in the Middle", donde el modelo ignora
+   la información ubicada en el medio del contexto.
+   encontrado_en_contexto=True | fuentes=['04_chromadb_y_rag.md']
+
+❓ ¿Cuál es la capital de Australia?
+💬 No lo sé
+   encontrado_en_contexto=False | fuentes=[]
+```
+
+- Las 3 preguntas del temario se responden con el contenido de los apuntes y citan el archivo correcto.
+- La pregunta fuera de dominio responde **"No lo sé"** aunque el modelo conoce la respuesta: el prompt
+  "filtro de veracidad" y el validador de `RespuestaRAG` impiden usar conocimiento externo.
