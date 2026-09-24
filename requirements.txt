@@ -1,0 +1,9 @@
+langchain
+langchain-chroma
+langchain-google-genai
+langchain-openai
+langchain-text-splitters
+chromadb
+tiktoken
+python-dotenv
+pydantic>=2
